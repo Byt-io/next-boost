@@ -59,9 +59,6 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
       send(state.payload, res)
       if (!conf.quiet) log(start, state.status, req.url) // record time for stale and hit
       if (state.status !== 'stale') return // stop here
-    } else if (state.status === 'timeout') {
-      send({ body: null, headers: null }, res)
-      return // prevent adding pressure to server
     }
 
     try {
