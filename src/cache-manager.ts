@@ -3,7 +3,7 @@ import { PassThrough } from 'stream'
 
 import { decodePayload } from './payload'
 import { Cache, State } from './types'
-import { sleep } from './utils'
+import { log, sleep } from './utils'
 
 const MAX_WAIT = 10000 // 10 seconds
 const WAIT_INTERVAL = 10 // 10 ms
@@ -39,7 +39,13 @@ export async function serveCache(cache: Cache, key: string, forced: boolean): Pr
       return { status: 'stale', payload }
     }
   } catch (e) {
-    console.error(`${key} cache error`, e)
+    const error = e as Error
+    log('error', 'Cache lookup error', {
+      key,
+      errorMessage: error.message,
+      errorStack: error.stack,
+    })
+
     return { status: 'miss' }
   }
 }

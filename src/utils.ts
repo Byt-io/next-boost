@@ -11,7 +11,7 @@ function isZipped(headers: { [key: string]: any }): boolean {
 }
 
 function log(type: 'info' | 'warn' | 'error', message: string, meta?: Record<string, any>) {
-  console.log({ date: new Date().getTime(), type, message, ...meta })
+  console.log(JSON.stringify({ date: new Date().getTime(), type, message, ...meta }))
 }
 
 function serve(res: ServerResponse, rv: RenderResult) {

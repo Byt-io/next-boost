@@ -61,8 +61,8 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
       if (!conf.quiet) {
         log('info', 'URL served from cache', {
           url: req.url,
-          status: state.status,
-          lookupDuration: new Date().getTime() - lookupStart,
+          cacheStatus: state.status,
+          cacheLookupMs: new Date().getTime() - lookupStart,
         })
       }
 
@@ -84,11 +84,12 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
       if (state.status !== 'stale') serve(res, rv)
 
       if (!conf.quiet) {
-        log(rv.statusCode < 400 ? 'info' : 'error', 'URL rendered', {
+        log(rv.statusCode < 400 ? 'info' : 'warn', 'URL rendered', {
           url: req.url,
-          status: state.status,
-          lookupDuration: new Date().getTime() - lookupStart,
-          renderDuration: new Date().getTime() - renderStart,
+          cacheStatus: state.status,
+          cacheLookupMs: new Date().getTime() - lookupStart,
+          renderStatus: rv.statusCode,
+          renderMs: new Date().getTime() - renderStart,
         })
       }
 
@@ -98,7 +99,12 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
         await cache.set('payload:' + key, encodePayload(payload), ttl)
       }
     } catch (e) {
-      console.error('Error saving payload to cache', e)
+      const error = e as Error
+      log('error', 'Render error', {
+        key,
+        errorMessage: error.message,
+        errorStack: error.stack,
+      })
     } finally {
       await unlock(key, cache)
     }
