@@ -48,7 +48,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
       return next(req, res)
     }
 
-    const start = process.hrtime()
+    const lookupStart = new Date().getTime()
     const forced = req.headers['x-next-boost'] === 'update' // forced
 
     const state = await serveCache(cache, key, forced)
@@ -57,11 +57,20 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
 
     if (state.status === 'stale' || state.status === 'hit' || state.status === 'fulfill') {
       send(state.payload, res)
-      if (!conf.quiet) log(start, state.status, req.url) // record time for stale and hit
+
+      if (!conf.quiet) {
+        log('info', 'URL served from cache', {
+          url: req.url,
+          status: state.status,
+          lookupDuration: new Date().getTime() - lookupStart,
+        })
+      }
+
       if (state.status !== 'stale') return // stop here
     }
 
     try {
+      const renderStart = new Date().getTime()
       await lock(key, cache)
 
       const args = { path: req.url, headers: req.headers, method: req.method }
@@ -73,8 +82,16 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
       const body = Buffer.from(rv.body)
       // stale has been served
       if (state.status !== 'stale') serve(res, rv)
-      // when in stale, there will 2 log output. The latter is the rendering time on server
-      if (!conf.quiet) log(start, state.status, req.url)
+
+      if (!conf.quiet) {
+        log(rv.statusCode < 400 ? 'info' : 'error', 'URL rendered', {
+          url: req.url,
+          status: state.status,
+          lookupDuration: new Date().getTime() - lookupStart,
+          renderDuration: new Date().getTime() - renderStart,
+        })
+      }
+
       if (rv.statusCode === 200) {
         // save gzipped data
         const payload = { headers: rv.headers, body: isZipped(rv.headers) ? body : gzipSync(body) }

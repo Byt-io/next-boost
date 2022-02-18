@@ -10,13 +10,8 @@ function isZipped(headers: { [key: string]: any }): boolean {
   return typeof field === 'string' && field.includes('gzip')
 }
 
-function log(start: [number, number], status: string, msg?: string): void {
-  const [secs, ns] = process.hrtime(start)
-  const ms = ns / 1000000
-  const timeS = `${secs > 0 ? secs + 's' : ''}`
-  const timeMs = `${secs === 0 ? ms.toFixed(1) : ms.toFixed(0)}ms`
-  const time = timeS + (secs > 1 ? '' : timeMs)
-  console.log('%s | %s: %s', time.padStart(7), status.padEnd(6), msg)
+function log(type: 'info' | 'warn' | 'error', message: string, meta?: Record<string, any>) {
+  console.log({ date: new Date().getTime(), type, message, ...meta })
 }
 
 function serve(res: ServerResponse, rv: RenderResult) {
