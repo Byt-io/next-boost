@@ -10,6 +10,7 @@
 *.ntvs*
 *.njsproj
 *.sln
+.history
 
 # Logs
 logs
