@@ -106,7 +106,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
 }
 
 export default async function CachedHandler(args: InitArgs, options?: HandlerConfig) {
-  console.log('> Preparing cached handler')
+  log('info', 'Preparing cache adapter')
 
   // merge config
   const conf = mergeConfig(options)

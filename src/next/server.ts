@@ -6,6 +6,7 @@ import gracefulShutdown from 'http-graceful-shutdown'
 
 import { Argv, parse } from '../cli'
 import CachedHandler from '../handler'
+import { log } from '../utils'
 
 const serve = async (argv: Argv) => {
   const port = (argv['--port'] as number) || 3000
@@ -21,14 +22,14 @@ const serve = async (argv: Argv) => {
 
   const server = new http.Server(cached.handler)
   server.listen(port, hostname, () => {
-    console.log(`> Serving on http://${hostname || 'localhost'}:${port}`)
+    log('info', `Serving on http://${hostname || 'localhost'}:${port}`)
   })
 
   gracefulShutdown(server, {
     timeout: grace,
-    preShutdown: async () => console.log('> Shutting down...'),
+    preShutdown: async () => log('info', 'Preparing shutdown'),
     onShutdown: async () => cached.close(),
-    finally: () => console.log('> Shutdown complete.'),
+    finally: () => log('info', 'Completed shutdown'),
   })
 }
 

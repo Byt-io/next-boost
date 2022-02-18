@@ -32,7 +32,7 @@ function mergeConfig(c: HandlerConfig = {}) {
       const f = require(configFile) as HandlerConfig
       c.quiet = c.quiet || f.quiet
       c = Object.assign(f, c)
-      console.log('  Loaded next-boost config from %s', c.filename)
+      log('info', 'Loaded next-boost config from ' + c.filename)
     } catch (error) {
       throw new Error(`Failed to load ${c.filename}`)
     }
