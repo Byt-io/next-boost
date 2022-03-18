@@ -1,12 +1,13 @@
-import { IncomingMessage } from 'http'
+import { context, SpanStatusCode, trace } from '@opentelemetry/api'
+import { IncomingMessage, ServerResponse } from 'http'
 import { gzipSync } from 'zlib'
-
 import { lock, send, serveCache, unlock } from './cache-manager'
-import { forMetrics, Metrics, serveMetrics } from './metrics'
 import { encodePayload } from './payload'
 import Renderer, { InitArgs } from './renderer'
 import { CacheAdapter, HandlerConfig, WrappedHandler } from './types'
 import { filterUrl, isZipped, log, mergeConfig, serve } from './utils'
+
+export const tracer = trace.getTracer('next-boost')
 
 function matchRules(conf: HandlerConfig, req: IncomingMessage) {
   const err = ['GET', 'HEAD'].indexOf(req.method ?? '') === -1
@@ -35,44 +36,60 @@ function matchRules(conf: HandlerConfig, req: IncomingMessage) {
  *
  * @returns a request listener to use in http server
  */
-const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
-  return async (req, res) => {
-    if (conf.metrics && forMetrics(req)) return serveMetrics(metrics, res)
+const wrap: WrappedHandler = (cache, conf, renderer, next) => {
+  return async (req, res, listenerSpan) => {
+    const serveSpan = tracer.startSpan('next-boost serve')
 
+    // Generate the cache key and find the cache rules for it
     req.url = filterUrl(req.url ?? '', conf.paramFilter)
     const key = conf.cacheKey ? conf.cacheKey(req) : req.url
     const { matched, ttl } = matchRules(conf, req)
+
+    serveSpan.setAttributes({ url: req.url, key, matched })
+    listenerSpan.setAttributes({ url: req.url, key, matched })
+
+    // No cache rule was found, bypass caching
     if (!matched) {
-      metrics.inc('bypass')
       res.setHeader('x-next-boost-status', 'bypass')
+      serveSpan.setAttribute('next-boost.status', 'bypass')
+      listenerSpan.setAttribute('next-boost.status', 'bypass')
+      serveSpan.end()
       return next(req, res)
     }
 
-    const lookupStart = new Date().getTime()
-    const forced = req.headers['x-next-boost'] === 'update' // forced
-
-    const state = await serveCache(cache, key, forced)
+    // Lookup the key in the cache
+    const cacheLookupSpan = tracer.startSpan('next-boost cacheLookup')
+    const state = await context.with(trace.setSpan(context.active(), cacheLookupSpan), () => {
+      return serveCache(cache, key, false)
+    })
     res.setHeader('x-next-boost-status', state.status)
-    metrics.inc(state.status)
+    cacheLookupSpan.setAttribute('next-boost.status', state.status)
+    serveSpan.setAttribute('next-boost.status', state.status)
+    listenerSpan.setAttribute('next-boost.status', state.status)
+    cacheLookupSpan.end()
 
+    // If the cache is not missing, serve it
     if (state.status === 'stale' || state.status === 'hit' || state.status === 'fulfill') {
       send(state.payload, res)
+      serveSpan.end()
 
-      if (!conf.quiet) {
-        log('info', 'URL served from cache', {
-          url: req.url,
-          cacheStatus: state.status,
-          cacheLookupMs: new Date().getTime() - lookupStart,
-        })
+      // Dont need to refresh the cache, we're done
+      if (state.status !== 'stale') {
+        return
       }
-
-      if (state.status !== 'stale') return // stop here
     }
 
+    // Refresh the cache (miss or stale)
     try {
-      const renderStart = new Date().getTime()
-      await lock(key, cache)
+      // Lock the cache
+      const cacheLockSpan = tracer.startSpan('next-boost cacheLock')
+      await context.with(trace.setSpan(context.active(), cacheLockSpan), () => {
+        return lock(key, cache)
+      })
+      cacheLockSpan.end()
 
+      // Render the page
+      const renderSpan = tracer.startSpan('next-boost render')
       const args = { path: req.url, headers: req.headers, method: req.method }
       const rv = await renderer.render(args)
       if (ttl && rv.statusCode === 200 && conf.cacheControl) {
@@ -80,23 +97,30 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
       }
       // rv.body is a Buffer in JSON format: { type: 'Buffer', data: [...] }
       const body = Buffer.from(rv.body)
-      // stale has been served
-      if (state.status !== 'stale') serve(res, rv)
+      renderSpan.setAttributes({ 'next.statusCode ': rv.statusCode })
+      if (rv.statusCode >= 400) {
+        renderSpan.setStatus({ code: SpanStatusCode.ERROR })
+      }
+      renderSpan.end()
 
-      if (!conf.quiet) {
-        log(rv.statusCode < 400 ? 'info' : 'warn', 'URL rendered', {
-          url: req.url,
-          cacheStatus: state.status,
-          cacheLookupMs: new Date().getTime() - lookupStart,
-          renderStatus: rv.statusCode,
-          renderMs: new Date().getTime() - renderStart,
-        })
+      // Serve the page if not yet served via cache
+      if (state.status !== 'stale') {
+        serve(res, rv)
+        serveSpan.end()
       }
 
+      // Write the cache
       if (rv.statusCode === 200) {
-        // save gzipped data
-        const payload = { headers: rv.headers, body: isZipped(rv.headers) ? body : gzipSync(body) }
-        await cache.set('payload:' + key, encodePayload(payload), ttl)
+        const cacheWriteSpan = tracer.startSpan('next-boost cacheWrite')
+        await context.with(trace.setSpan(context.active(), cacheWriteSpan), () => {
+          const payload = {
+            headers: rv.headers,
+            body: isZipped(rv.headers) ? body : gzipSync(body),
+          }
+
+          return cache.set('payload:' + key, encodePayload(payload), ttl)
+        })
+        cacheWriteSpan.end()
       }
     } catch (e) {
       const error = e as Error
@@ -105,8 +129,14 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
         errorMessage: error.message,
         errorStack: error.stack,
       })
+      listenerSpan.recordException(error)
     } finally {
-      await unlock(key, cache)
+      // Unlock the cache
+      const cacheUnlockSpan = tracer.startSpan('next-boost cacheUnlock')
+      await context.with(trace.setSpan(context.active(), cacheUnlockSpan), () => {
+        return unlock(key, cache)
+      })
+      cacheUnlockSpan.end()
     }
   }
 }
@@ -125,15 +155,25 @@ export default async function CachedHandler(args: InitArgs, options?: HandlerCon
   const adapter = conf.cacheAdapter
   const cache = await adapter.init()
 
+  log('info', 'Initializing renderer')
   const renderer = Renderer()
   await renderer.init(args)
   const plain = await require(args.script).default(args)
 
-  const metrics = new Metrics()
+  const requestHandler = wrap(cache, conf, renderer, plain)
+  const requestListener = async (req: IncomingMessage, res: ServerResponse) => {
+    const listenerSpan = tracer.startSpan('next-boost listener')
+
+    await context.with(trace.setSpan(context.active(), listenerSpan), () => {
+      return requestHandler(req, res, listenerSpan)
+    })
+
+    listenerSpan.end()
+  }
 
   // init the child process for revalidate and cache purge
   return {
-    handler: wrap(cache, conf, renderer, plain, metrics),
+    handler: requestListener,
     cache,
     close: async () => {
       renderer.kill()

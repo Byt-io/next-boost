@@ -8,17 +8,22 @@ import { Argv, parse } from '../cli'
 import CachedHandler from '../handler'
 import { log } from '../utils'
 
-const serve = async (argv: Argv) => {
-  const port = (argv['--port'] as number) || 3000
-  // no host binding by default, the same as `next start`
-  const hostname = argv['--hostname'] as string
-  const quiet = argv['--quiet'] as boolean
-  const dir = (argv['dir'] as string) || '.'
-  const grace = (argv['--grace'] as number) || 30000
+export interface ServeOptions {
+  port?: number
+  hostname?: string
+  dir?: string
+  grace?: number
+}
+
+export const serve = async (options: ServeOptions) => {
+  const port = options.port || 3000
+  const hostname = options.hostname // no host binding by default, the same as `next start`
+  const dir = options.dir || '.'
+  const grace = options.grace || 30000
 
   const script = require.resolve('./init')
   const rendererArgs = { script, args: { dir, dev: false } }
-  const cached = await CachedHandler(rendererArgs, { quiet })
+  const cached = await CachedHandler(rendererArgs)
 
   const server = new http.Server(cached.handler)
   server.listen(port, hostname, () => {
@@ -31,9 +36,4 @@ const serve = async (argv: Argv) => {
     onShutdown: async () => cached.close(),
     finally: () => log('info', 'Completed shutdown'),
   })
-}
-
-if (require.main === module) {
-  const argv = parse(process.argv)
-  if (argv) serve(argv)
 }

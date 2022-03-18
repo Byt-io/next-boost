@@ -1,6 +1,5 @@
-import { IncomingMessage } from 'http'
-
-import { Metrics } from './metrics'
+import { Span } from '@opentelemetry/api'
+import { IncomingMessage, ServerResponse } from 'http'
 import { PagePayload } from './payload'
 import Renderer, { RequestListener } from './renderer'
 
@@ -48,8 +47,7 @@ export type WrappedHandler = (
   conf: HandlerConfig,
   renderer: RendererType,
   plainHandler: RequestListener,
-  metrics: Metrics,
-) => RequestListener
+) => (req: IncomingMessage, res: ServerResponse, listenerSpan: Span) => Promise<void> | void
 
 export type State =
   | {
