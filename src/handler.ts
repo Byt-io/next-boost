@@ -7,7 +7,7 @@ import Renderer, { InitArgs } from './renderer'
 import { CacheAdapter, HandlerConfig, WrappedHandler } from './types'
 import { filterUrl, isZipped, log, mergeConfig, serve } from './utils'
 
-export const tracer = trace.getTracer('next-boost')
+const tracer = trace.getTracer('next-boost')
 
 function matchRules(conf: HandlerConfig, req: IncomingMessage) {
   const err = ['GET', 'HEAD'].indexOf(req.method ?? '') === -1
@@ -37,7 +37,7 @@ function matchRules(conf: HandlerConfig, req: IncomingMessage) {
  * @returns a request listener to use in http server
  */
 const wrap: WrappedHandler = (cache, conf, renderer, next) => {
-  return async (req, res, listenerSpan) => {
+  return async (req, res, handlerSpan) => {
     const serveSpan = tracer.startSpan('next-boost serve')
 
     // Generate the cache key and find the cache rules for it
@@ -46,13 +46,13 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
     const { matched, ttl } = matchRules(conf, req)
 
     serveSpan.setAttributes({ url: req.url, key, matched })
-    listenerSpan.setAttributes({ url: req.url, key, matched })
+    handlerSpan.setAttributes({ url: req.url, key, matched })
 
     // No cache rule was found, bypass caching
     if (!matched) {
       res.setHeader('x-next-boost-status', 'bypass')
       serveSpan.setAttribute('next-boost.status', 'bypass')
-      listenerSpan.setAttribute('next-boost.status', 'bypass')
+      handlerSpan.setAttribute('next-boost.status', 'bypass')
       serveSpan.end()
       return next(req, res)
     }
@@ -65,7 +65,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
     res.setHeader('x-next-boost-status', state.status)
     cacheLookupSpan.setAttribute('next-boost.status', state.status)
     serveSpan.setAttribute('next-boost.status', state.status)
-    listenerSpan.setAttribute('next-boost.status', state.status)
+    handlerSpan.setAttribute('next-boost.status', state.status)
     cacheLookupSpan.end()
 
     // If the cache is not missing, serve it
@@ -129,7 +129,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
         errorMessage: error.message,
         errorStack: error.stack,
       })
-      listenerSpan.recordException(error)
+      handlerSpan.recordException(error)
     } finally {
       // Unlock the cache
       const cacheUnlockSpan = tracer.startSpan('next-boost cacheUnlock')
@@ -162,13 +162,13 @@ export default async function CachedHandler(args: InitArgs, options?: HandlerCon
 
   const requestHandler = wrap(cache, conf, renderer, plain)
   const requestListener = async (req: IncomingMessage, res: ServerResponse) => {
-    const listenerSpan = tracer.startSpan('next-boost listener')
+    const handlerSpan = tracer.startSpan('next-boost handler')
 
-    await context.with(trace.setSpan(context.active(), listenerSpan), () => {
-      return requestHandler(req, res, listenerSpan)
+    await context.with(trace.setSpan(context.active(), handlerSpan), () => {
+      return requestHandler(req, res, handlerSpan)
     })
 
-    listenerSpan.end()
+    handlerSpan.end()
   }
 
   // init the child process for revalidate and cache purge

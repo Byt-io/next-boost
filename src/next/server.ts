@@ -4,7 +4,6 @@ process.env.NODE_ENV = 'production'
 import http from 'http'
 import gracefulShutdown from 'http-graceful-shutdown'
 
-import { Argv, parse } from '../cli'
 import CachedHandler from '../handler'
 import { log } from '../utils'
 
