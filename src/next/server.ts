@@ -15,7 +15,7 @@ export interface ServeOptions {
   grace?: number
 }
 
-export const serve = async (options: ServeOptions) => {
+export const serve = async (options: ServeOptions = {}) => {
   const port = options.port || 3000
   const hostname = options.hostname // no host binding by default, the same as `next start`
   const dir = options.dir || '.'
