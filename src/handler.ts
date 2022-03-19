@@ -6,6 +6,7 @@ import { encodePayload } from './payload'
 import Renderer, { InitArgs } from './renderer'
 import { CacheAdapter, HandlerConfig, WrappedHandler } from './types'
 import { filterUrl, isZipped, log, mergeConfig, serve } from './utils'
+import { MeterProvider } from '@opentelemetry/sdk-metrics-base'
 
 const tracer = trace.getTracer('next-boost')
 
@@ -37,7 +38,7 @@ function matchRules(conf: HandlerConfig, req: IncomingMessage) {
  * @returns a request listener to use in http server
  */
 const wrap: WrappedHandler = (cache, conf, renderer, next) => {
-  return async (req, res, handlerSpan) => {
+  return async (req, res, handlerSpan, counters) => {
     const serveSpan = tracer.startSpan('next-boost serve')
 
     // Generate the cache key and find the cache rules for it
@@ -51,6 +52,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
     // No cache rule was found, bypass caching
     if (!matched) {
       res.setHeader('x-next-boost-status', 'bypass')
+      counters.request.add(1, { url: req.url, 'next-boost.status': 'bypass' })
       serveSpan.setAttribute('next-boost.status', 'bypass')
       handlerSpan.setAttribute('next-boost.status', 'bypass')
       serveSpan.end()
@@ -63,6 +65,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
       return serveCache(cache, key, false)
     })
     res.setHeader('x-next-boost-status', state.status)
+    counters.request.add(1, { url: req.url, 'next-boost.status': state.status })
     cacheLookupSpan.setAttribute('next-boost.status', state.status)
     serveSpan.setAttribute('next-boost.status', state.status)
     handlerSpan.setAttribute('next-boost.status', state.status)
@@ -90,6 +93,7 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
 
       // Render the page
       const renderSpan = tracer.startSpan('next-boost render')
+      counters.pendingRenders.add(1)
       const args = { path: req.url, headers: req.headers, method: req.method }
       const rv = await renderer.render(args)
       if (ttl && rv.statusCode === 200 && conf.cacheControl) {
@@ -97,6 +101,8 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
       }
       // rv.body is a Buffer in JSON format: { type: 'Buffer', data: [...] }
       const body = Buffer.from(rv.body)
+      counters.pendingRenders.add(-1)
+      counters.renders.add(1, { 'next.statusCode': rv.statusCode.toString() })
       renderSpan.setAttributes({ 'next.statusCode ': rv.statusCode })
       if (rv.statusCode >= 400) {
         renderSpan.setStatus({ code: SpanStatusCode.ERROR })
@@ -160,12 +166,31 @@ export default async function CachedHandler(args: InitArgs, options?: HandlerCon
   await renderer.init(args)
   const plain = await require(args.script).default(args)
 
+  const meterProvider = new MeterProvider({
+    exporter: options?.openTelemetryConfig?.metricExporter,
+    interval: options?.openTelemetryConfig?.metricInterval,
+  })
+
+  const meter = meterProvider.getMeter('default')
+
+  const counters = {
+    request: meter.createCounter('next_boost_requests', {
+      description: 'Amount of requests handled by next-boost',
+    }),
+    renders: meter.createCounter('next_boost_renders', {
+      description: 'Amount of requests rendered by next-boost',
+    }),
+    pendingRenders: meter.createUpDownCounter('next_boost_pending_renders', {
+      description: 'Amount of requests currently being rendered by next-boost',
+    }),
+  }
+
   const requestHandler = wrap(cache, conf, renderer, plain)
   const requestListener = async (req: IncomingMessage, res: ServerResponse) => {
     const handlerSpan = tracer.startSpan('next-boost handler')
 
     await context.with(trace.setSpan(context.active(), handlerSpan), () => {
-      return requestHandler(req, res, handlerSpan)
+      return requestHandler(req, res, handlerSpan, counters)
     })
 
     handlerSpan.end()
