@@ -2,7 +2,7 @@
   "name": "@next-boost/next-boost",
   "version": "0.15.1",
   "description": "Add a cache layer for next.js SSR pages. Use stale-while-revalidate to boost the performance.",
-  "main": "dist/handler.js",
+  "main": "dist/next/server.js",
   "bin": {
     "next-boost": "dist/next/server.js"
   },
@@ -27,6 +27,8 @@
   "homepage": "https://github.com/next-boost/next-boost",
   "license": "MIT",
   "dependencies": {
+    "@opentelemetry/api": "^1.1.0",
+    "@opentelemetry/sdk-metrics-base": "^0.27.0",
     "http-graceful-shutdown": "^3.1.5",
     "multee": "^0.2.3"
   },

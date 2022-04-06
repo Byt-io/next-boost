@@ -1,6 +1,7 @@
-import { IncomingMessage } from 'http'
-
-import { Metrics } from './metrics'
+import { Span } from '@opentelemetry/api'
+import { MeterConfig } from '@opentelemetry/sdk-metrics-base'
+import { Counter } from '@opentelemetry/api-metrics'
+import { IncomingMessage, ServerResponse } from 'http'
 import { PagePayload } from './payload'
 import Renderer, { RequestListener } from './renderer'
 
@@ -33,6 +34,10 @@ export interface HandlerConfig {
   cacheKey?: CacheKeyBuilder
   cacheControl?: CacheControlBuilder
   metrics?: boolean
+  openTelemetryConfig?: {
+    metricExporter: MeterConfig['exporter']
+    metricInterval: MeterConfig['interval']
+  }
 }
 
 export interface URLCacheRule {
@@ -48,8 +53,16 @@ export type WrappedHandler = (
   conf: HandlerConfig,
   renderer: RendererType,
   plainHandler: RequestListener,
-  metrics: Metrics,
-) => RequestListener
+) => (
+  req: IncomingMessage,
+  res: ServerResponse,
+  handlerSpan: Span,
+  counters: {
+    request: Counter
+    renders: Counter
+    pendingRenders: Counter
+  },
+) => Promise<void> | void
 
 export type State =
   | {
