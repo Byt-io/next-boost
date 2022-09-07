@@ -5,7 +5,7 @@ import { forMetrics, Metrics, serveMetrics } from './metrics'
 import { encodePayload } from './payload'
 import Renderer, { InitArgs } from './renderer'
 import { CacheAdapter, HandlerConfig, WrappedHandler } from './types'
-import { filterUrl, isZipped, log, mergeConfig, serve } from './utils'
+import { filterUrl, isZipped, mergeConfig, serve } from './utils'
 
 function matchRules(conf: HandlerConfig, req: IncomingMessage) {
   const err = ['GET', 'HEAD'].indexOf(req.method ?? '') === -1
@@ -34,7 +34,7 @@ function matchRules(conf: HandlerConfig, req: IncomingMessage) {
  *
  * @returns a request listener to use in http server
  */
-const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
+const wrap: WrappedHandler = (cache, conf, renderer, next, metrics, log) => {
   return async (req, res) => {
     if (conf.metrics && forMetrics(req)) return serveMetrics(metrics, res)
 
@@ -130,7 +130,9 @@ const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
   }
 }
 
-export default async function CachedHandler(args: InitArgs, options?: HandlerConfig) {
+export default async function CachedHandler(args: InitArgs, options: HandlerConfig) {
+  const log = options.log
+
   log('info', 'Preparing cache adapter')
 
   // merge config
@@ -153,7 +155,7 @@ export default async function CachedHandler(args: InitArgs, options?: HandlerCon
 
   // init the child process for revalidate and cache purge
   return {
-    handler: wrap(cache, conf, renderer, plain, metrics),
+    handler: wrap(cache, conf, renderer, plain, metrics, log),
     cache,
     close: async () => {
       renderer.kill()

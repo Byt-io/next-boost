@@ -24,6 +24,8 @@ export type URLCacheRuleResolver = (req: IncomingMessage) => number
 
 export type CacheControlBuilder = (req: IncomingMessage, ttl: number) => string
 
+export type Logger = (level: string, message: string, meta?: Record<string, unknown>) => void
+
 export interface HandlerConfig {
   filename?: string // config file's path
   quiet?: boolean
@@ -33,6 +35,7 @@ export interface HandlerConfig {
   cacheKey?: CacheKeyBuilder
   cacheControl?: CacheControlBuilder
   metrics?: boolean
+  log: Logger
 }
 
 export interface URLCacheRule {
@@ -49,6 +52,7 @@ export type WrappedHandler = (
   renderer: RendererType,
   plainHandler: RequestListener,
   metrics: Metrics,
+  log: Logger
 ) => RequestListener
 
 export type State =
