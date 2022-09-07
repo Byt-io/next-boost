@@ -5,17 +5,12 @@ import http from 'http'
 import gracefulShutdown from 'http-graceful-shutdown'
 import CachedHandler from '../handler'
 import { log } from '../utils'
-import { MeterConfig } from '@opentelemetry/sdk-metrics-base'
 
 export interface ServeOptions {
   port?: number
   hostname?: string
   dir?: string
   grace?: number
-  openTelemetryConfig?: {
-    metricExporter: MeterConfig['exporter']
-    metricInterval: MeterConfig['interval']
-  }
 }
 
 export const serve = async (options: ServeOptions = {}) => {
@@ -26,9 +21,7 @@ export const serve = async (options: ServeOptions = {}) => {
 
   const script = require.resolve('./init')
   const rendererArgs = { script, args: { dir, dev: false } }
-  const cached = await CachedHandler(rendererArgs, {
-    openTelemetryConfig: options.openTelemetryConfig,
-  })
+  const cached = await CachedHandler(rendererArgs)
 
   const server = new http.Server(cached.handler)
   server.listen(port, hostname, () => {

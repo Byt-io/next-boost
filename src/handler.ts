@@ -1,14 +1,11 @@
-import { context, SpanStatusCode, trace } from '@opentelemetry/api'
-import { IncomingMessage, ServerResponse } from 'http'
+import { IncomingMessage } from 'http'
 import { gzipSync } from 'zlib'
 import { lock, send, serveCache, unlock } from './cache-manager'
+import { forMetrics, Metrics, serveMetrics } from './metrics'
 import { encodePayload } from './payload'
 import Renderer, { InitArgs } from './renderer'
 import { CacheAdapter, HandlerConfig, WrappedHandler } from './types'
 import { filterUrl, isZipped, log, mergeConfig, serve } from './utils'
-import { MeterProvider } from '@opentelemetry/sdk-metrics-base'
-
-const tracer = trace.getTracer('next-boost')
 
 function matchRules(conf: HandlerConfig, req: IncomingMessage) {
   const err = ['GET', 'HEAD'].indexOf(req.method ?? '') === -1
@@ -37,46 +34,41 @@ function matchRules(conf: HandlerConfig, req: IncomingMessage) {
  *
  * @returns a request listener to use in http server
  */
-const wrap: WrappedHandler = (cache, conf, renderer, next) => {
-  return async (req, res, handlerSpan, counters) => {
-    const serveSpan = tracer.startSpan('next-boost serve')
+const wrap: WrappedHandler = (cache, conf, renderer, next, metrics) => {
+  return async (req, res) => {
+    if (conf.metrics && forMetrics(req)) return serveMetrics(metrics, res)
 
     // Generate the cache key and find the cache rules for it
     req.url = filterUrl(req.url ?? '', conf.paramFilter)
     const key = conf.cacheKey ? conf.cacheKey(req) : req.url
     const { matched, ttl } = matchRules(conf, req)
 
-    serveSpan.setAttributes({ url: req.url, key, matched })
-    handlerSpan.setAttributes({ url: req.url, key, matched })
-
     // No cache rule was found, bypass caching
     if (!matched) {
+      metrics.inc('bypass')
       res.setHeader('x-next-boost-status', 'bypass')
-      counters.request.add(1, { url: req.url, 'next-boost.status': 'bypass' })
-      serveSpan.setAttribute('next-boost.status', 'bypass')
-      handlerSpan.setAttribute('next-boost.status', 'bypass')
-      serveSpan.end()
+      log('info', 'URL served', { url: req.url, cacheStatus: 'bypass' })
       return next(req, res)
     }
 
     // Lookup the key in the cache
-    const cacheLookupSpan = tracer.startSpan('next-boost cacheLookup')
-    const state = await context.with(trace.setSpan(context.active(), cacheLookupSpan), () => {
-      return serveCache(cache, key, false)
-    })
+    const lookupStart = new Date().getTime()
+    const state = await serveCache(cache, key, false)
+    const cacheLookupMs = new Date().getTime() - lookupStart
     res.setHeader('x-next-boost-status', state.status)
-    counters.request.add(1, { url: req.url, 'next-boost.status': state.status })
-    cacheLookupSpan.setAttribute('next-boost.status', state.status)
-    serveSpan.setAttribute('next-boost.status', state.status)
-    handlerSpan.setAttribute('next-boost.status', state.status)
-    cacheLookupSpan.end()
+    metrics.inc(state.status)
 
     // If the cache is not missing, serve it
     if (state.status === 'stale' || state.status === 'hit' || state.status === 'fulfill') {
       send(state.payload, res)
-      serveSpan.end()
 
-      // Dont need to refresh the cache, we're done
+      log('info', 'URL served', {
+        url: req.url,
+        cacheStatus: state.status,
+        cacheLookupMs,
+      })
+
+      // Don't need to refresh the cache -> we're done
       if (state.status !== 'stale') {
         return
       }
@@ -85,48 +77,45 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
     // Refresh the cache (miss or stale)
     try {
       // Lock the cache
-      const cacheLockSpan = tracer.startSpan('next-boost cacheLock')
-      await context.with(trace.setSpan(context.active(), cacheLockSpan), () => {
-        return lock(key, cache)
-      })
-      cacheLockSpan.end()
+      await lock(key, cache)
 
       // Render the page
-      const renderSpan = tracer.startSpan('next-boost render')
-      counters.pendingRenders.add(1)
+      const renderStart = new Date().getTime()
       const args = { path: req.url, headers: req.headers, method: req.method }
       const rv = await renderer.render(args)
+      const renderMs = new Date().getTime() - renderStart
+
       if (ttl && rv.statusCode === 200 && conf.cacheControl) {
         rv.headers['cache-control'] = conf.cacheControl(req, ttl)
       }
       // rv.body is a Buffer in JSON format: { type: 'Buffer', data: [...] }
       const body = Buffer.from(rv.body)
-      counters.pendingRenders.add(-1)
-      counters.renders.add(1, { 'next.statusCode': rv.statusCode.toString() })
-      renderSpan.setAttributes({ 'next.statusCode ': rv.statusCode })
-      if (rv.statusCode >= 400) {
-        renderSpan.setStatus({ code: SpanStatusCode.ERROR })
-      }
-      renderSpan.end()
 
       // Serve the page if not yet served via cache
       if (state.status !== 'stale') {
         serve(res, rv)
-        serveSpan.end()
       }
+
+      log(rv.statusCode < 400 ? 'info' : 'warn', 'URL served', {
+        url: req.url,
+        cacheStatus: state.status,
+        cacheLookupMs,
+        renderStatus: rv.statusCode,
+        renderMs,
+      })
 
       // Write the cache
       if (rv.statusCode === 200) {
-        const cacheWriteSpan = tracer.startSpan('next-boost cacheWrite')
-        await context.with(trace.setSpan(context.active(), cacheWriteSpan), () => {
-          const payload = {
-            headers: rv.headers,
-            body: isZipped(rv.headers) ? body : gzipSync(body),
-          }
+        const writeStart = new Date().getTime()
+        const payload = { headers: rv.headers, body: isZipped(rv.headers) ? body : gzipSync(body) }
+        await cache.set('payload:' + key, encodePayload(payload), ttl)
+        const cacheWriteMs = new Date().getTime() - writeStart
 
-          return cache.set('payload:' + key, encodePayload(payload), ttl)
+        log('info', 'Cache written', {
+          url: req.url,
+          cacheStatus: state.status,
+          cacheWriteMs,
         })
-        cacheWriteSpan.end()
       }
     } catch (e) {
       const error = e as Error
@@ -135,14 +124,8 @@ const wrap: WrappedHandler = (cache, conf, renderer, next) => {
         errorMessage: error.message,
         errorStack: error.stack,
       })
-      handlerSpan.recordException(error)
     } finally {
-      // Unlock the cache
-      const cacheUnlockSpan = tracer.startSpan('next-boost cacheUnlock')
-      await context.with(trace.setSpan(context.active(), cacheUnlockSpan), () => {
-        return unlock(key, cache)
-      })
-      cacheUnlockSpan.end()
+      await unlock(key, cache)
     }
   }
 }
@@ -166,39 +149,11 @@ export default async function CachedHandler(args: InitArgs, options?: HandlerCon
   await renderer.init(args)
   const plain = await require(args.script).default(args)
 
-  const meterProvider = new MeterProvider({
-    exporter: options?.openTelemetryConfig?.metricExporter,
-    interval: options?.openTelemetryConfig?.metricInterval,
-  })
-
-  const meter = meterProvider.getMeter('default')
-
-  const counters = {
-    request: meter.createCounter('next_boost_requests', {
-      description: 'Amount of requests handled by next-boost',
-    }),
-    renders: meter.createCounter('next_boost_renders', {
-      description: 'Amount of requests rendered by next-boost',
-    }),
-    pendingRenders: meter.createUpDownCounter('next_boost_pending_renders', {
-      description: 'Amount of requests currently being rendered by next-boost',
-    }),
-  }
-
-  const requestHandler = wrap(cache, conf, renderer, plain)
-  const requestListener = async (req: IncomingMessage, res: ServerResponse) => {
-    const handlerSpan = tracer.startSpan('next-boost handler')
-
-    await context.with(trace.setSpan(context.active(), handlerSpan), () => {
-      return requestHandler(req, res, handlerSpan, counters)
-    })
-
-    handlerSpan.end()
-  }
+  const metrics = new Metrics()
 
   // init the child process for revalidate and cache purge
   return {
-    handler: requestListener,
+    handler: wrap(cache, conf, renderer, plain, metrics),
     cache,
     close: async () => {
       renderer.kill()
