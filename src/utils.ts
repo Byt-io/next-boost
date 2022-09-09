@@ -10,18 +10,14 @@ function isZipped(headers: { [key: string]: any }): boolean {
   return typeof field === 'string' && field.includes('gzip')
 }
 
-function log(type: 'info' | 'warn' | 'error', message: string, meta?: Record<string, any>) {
-  console.log(JSON.stringify({ date: new Date().getTime(), type, message, ...meta }))
-}
-
 function serve(res: ServerResponse, rv: RenderResult) {
   for (const k in rv.headers) res.setHeader(k, rv.headers[k])
   res.statusCode = rv.statusCode
   res.end(Buffer.from(rv.body))
 }
 
-function mergeConfig(c: HandlerConfig = {}) {
-  const conf: HandlerConfig = {
+function mergeConfig(c: HandlerConfig) {
+  const conf: Partial<HandlerConfig> = {
     rules: [{ regex: '.*', ttl: 3600 }],
   }
 
@@ -32,7 +28,7 @@ function mergeConfig(c: HandlerConfig = {}) {
       const f = require(configFile) as HandlerConfig
       c.quiet = c.quiet || f.quiet
       c = Object.assign(f, c)
-      log('info', 'Loaded next-boost config from ' + c.filename)
+      c.log('info', 'Loaded next-boost config from ' + c.filename)
     } catch (error) {
       throw new Error(`Failed to load ${c.filename}`)
     }
@@ -40,7 +36,7 @@ function mergeConfig(c: HandlerConfig = {}) {
 
   Object.assign(conf, c)
 
-  return conf
+  return conf as HandlerConfig
 }
 
 function filterUrl(url: string, filter?: ParamFilter) {
@@ -59,4 +55,4 @@ async function sleep(ms: number) {
   return new Promise<void>(resolve => setTimeout(resolve, ms))
 }
 
-export { isZipped, log, mergeConfig, sleep, serve, filterUrl }
+export { isZipped, mergeConfig, sleep, serve, filterUrl }
